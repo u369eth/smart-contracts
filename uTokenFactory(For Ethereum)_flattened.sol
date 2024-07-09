@@ -1,7 +1,3 @@
-/**
- *Submitted for verification at Etherscan.io on 2023-08-14
- */
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
@@ -41,9 +37,12 @@ interface IuToken {
         address[] memory _whiteListAddressess
     ) external;
 
-    function deposit(uint256 _amount) external returns (bool);
+    function protect(address _owner, uint256 _amount) external returns (bool);
 
-    function withdraw(uint256 _amount) external returns (bool);
+    function burnAndUnprotect(
+        address _owner,
+        uint256 _amount
+    ) external returns (bool);
 
     function currency() external view returns (string memory);
 }
@@ -522,16 +521,20 @@ contract uToken is IuToken {
     }
 
     // function to take ethers and transfer uTokens
-    function deposit(uint256 _amount) external onlyFactory returns (bool) {
-        _mint(tx.origin, _amount);
+    function protect(
+        address _owner,
+        uint256 _amount
+    ) external onlyFactory returns (bool) {
+        _mint(_owner, _amount);
         return true;
     }
 
     // function to take uTokens and send Ethers back
-    function withdraw(
+    function burnAndUnprotect(
+        address _owner,
         uint256 _amount
     ) external onlyFactory lock returns (bool) {
-        _burn(tx.origin, _amount);
+        _burn(_owner, _amount);
         return true;
     }
 
@@ -1446,16 +1449,24 @@ library SafeMath {
     }
 }
 
-// File: @openzeppelin/contracts/utils/structs/EnumerableSet.sol
-
-// File: uTokenFactory(For Polygon).sol
-
 pragma solidity ^0.8.18;
 
 contract uTokenFactory is Ownable {
     using SafeMath for uint256;
     using Address for address;
     using EnumerableSet for EnumerableSet.AddressSet;
+
+    // all investors of the system
+    EnumerableSet.AddressSet private allDepositors;
+
+    // overall investment of a depostitor
+    // mapping: depositor => tokens
+    mapping(address => EnumerableSet.AddressSet) private depositedTokensOf;
+    // mapping: depositor => amount of deposited native currency
+    mapping(address => uint256) private nativeCurrencyDepositedBy;
+    // mapping: depositor => token => amount
+    mapping(address => mapping(address => uint256))
+        private depositedAmountOfUserForToken;
 
     // uToken -> Token Address (against which contract is deployed)
     mapping(address => address) private tokenAdressOf_uToken;
@@ -1512,6 +1523,7 @@ contract uTokenFactory is Ownable {
 
     // time periods for reward
     uint256 public timeLimitForReward = 129600;
+    uint256 public timeLimitForReward_369days = 31881600; // 369 days
     // uint256 public timeLimitForRewardCollection = 10;
     uint256 public deployTime;
 
@@ -1519,19 +1531,19 @@ contract uTokenFactory is Ownable {
     uint256 public constant ZOOM = 1_000_00; // actually 100. this is divider to calculate percentage
 
     // fee receiver addresses.
-    address public fundAddress = 0x8c70B2AAd00298f118Dc23872C49798d911bB787; // address which will receive all fees
-    address public charityAddress = 0xbEd67EB35F81a37a71B0Af5B7c3886C186d5666b; // address which will receive share of charity.
-    address public forthAddress = 0xD35842D260dB8381B77014Eab8CC9c0F1572Fe29;
-    address public rewardDistributer =
-        0x735D4524f47B5191A4C82501f4Ca40AD4F637437;
+    address public u369_30 = 0x23f7c530D41D437Cf82f2164084A009836c26080;
+    address public u369gift_30 = 0xD6CAf4582Ef5CD4517398E91FeeaF1eA24d6BE1D;
+    address public u369impact_30 = 0x0d4228ff01dbE7167C3a35640D362faAfd42406d;
+    address public u369community_dev_30 =
+        0xB0386144b5060F96Be35dCe8AD1BBdDf8ef37534;
 
-    event Deposit(
+    event Protect(
         address depositor,
         address token,
         uint256 period,
         uint256 amount
     );
-    event Withdraw(address withdrawer, address token, uint256 amount);
+    event BurnAndUnprotect(address withdrawer, address token, uint256 amount);
     event RewardOfETH(
         address rewardCollector,
         uint256 period,
@@ -1552,7 +1564,7 @@ contract uTokenFactory is Ownable {
         whiteListAddresses = _whiteListAddressess;
 
         deployedAddressOfEth = _deployEth();
-        _addAllowedTokens(_allowedTokens);
+        if (_allowedTokens.length != 0) _addAllowedTokens(_allowedTokens);
 
         // setting whitelist addresses.
     }
@@ -1582,9 +1594,9 @@ contract uTokenFactory is Ownable {
             deployedEth := create2(0, add(bytecode, 32), mload(bytecode), salt)
         }
         IuToken(deployedEth).initialize(
-            "uEth",
             "uETH",
-            "ETH",
+            "uETH",
+            "ETHER",
             whiteListAddresses
         );
     }
@@ -1714,7 +1726,7 @@ contract uTokenFactory is Ownable {
      * require: Deposit amount must be greater than 0.
      * require: The token address must be valid.
      */
-    function deposit(
+    function protect(
         string memory _password,
         address _uTokenAddress,
         uint256 _amount
@@ -1735,12 +1747,12 @@ contract uTokenFactory is Ownable {
         uint256 _remaining = _amount.sub(_depositFee);
 
         require(
-            IuToken(_uTokenAddress).deposit(_remaining),
+            IuToken(_uTokenAddress).protect(depositor, _remaining),
             "Factory: deposit failed"
         );
         if (_uTokenAddress == deployedAddressOfEth) {
             require(msg.value > 0, "Factory: invalid Ether");
-            // payable(fundAddress).transfer(_depositFee);
+            // payable(u369_30).transfer(_depositFee);
             _handleFeeEth(_depositFee);
         } else {
             require(
@@ -1751,8 +1763,29 @@ contract uTokenFactory is Ownable {
                 ),
                 "Factory: TransferFrom failed"
             );
-            // require(IERC20(tokenAdressOf_uToken[_uTokenAddress]).transfer(fundAddress, _depositFee), "Factory: transfer failed");
+            // require(IERC20(tokenAdressOf_uToken[_uTokenAddress]).transfer(u369_30, _depositFee), "Factory: transfer failed");
             _handleFeeTokens(tokenAdressOf_uToken[_uTokenAddress], _depositFee);
+        }
+
+        // If this is first time to deposit in the system, add it to the depositors list of the system
+        if (!(allDepositors.contains(depositor))) allDepositors.add(depositor);
+
+        // investment details update for 369 days mappings.
+
+        // if native currency then add accordingly otherwise add tokens and add amount of that token
+        if (_uTokenAddress == deployedAddressOfEth)
+            nativeCurrencyDepositedBy[depositor] = nativeCurrencyDepositedBy[
+                depositor
+            ].add(msg.value);
+        else {
+            address tokenAddress = tokenAdressOf_uToken[_uTokenAddress];
+            if (!depositedTokensOf[depositor].contains(tokenAddress))
+                depositedTokensOf[depositor].add(tokenAddress);
+            depositedAmountOfUserForToken[depositor][
+                tokenAddress
+            ] = depositedAmountOfUserForToken[depositor][tokenAddress].add(
+                _amount
+            );
         }
 
         if (!(investeduTokensOf[depositor].contains(_uTokenAddress)))
@@ -1771,7 +1804,7 @@ contract uTokenFactory is Ownable {
         ][_currentPeriod] = investedAmount_OfUser_AgainstuTokens_ForPeriod[
             depositor
         ][_uTokenAddress][_currentPeriod].add(_remaining);
-        emit Deposit(depositor, _uTokenAddress, _currentPeriod, _remaining);
+        emit Protect(depositor, _uTokenAddress, _currentPeriod, _remaining);
     }
 
     /**
@@ -1790,14 +1823,14 @@ contract uTokenFactory is Ownable {
             .mul(percentOfForthAddress)
             .div(ZOOM);
         // uint256 shareOfWinnerAddress = thirtyPercentShare;
-        // uint256 shareOfCharityAddress = thirtyPercentShare; // because winner and charity will receive same percentage.
-        // uint256 shareOfFundAddress = thirtyPercentShare; // because winner and charity will receive same percentage.
+        // uint256 shareOfu369impact_30 = thirtyPercentShare; // because winner and charity will receive same percentage.
+        // uint256 shareOfu369_30 = thirtyPercentShare; // because winner and charity will receive same percentage.
         // uint256 shareOfForthAddress = _depositFee - (thirtyPercentShare * 3); // it will receive remaining 10% percent
 
-        payable(rewardDistributer).transfer(thirtyPercentShare);
-        payable(fundAddress).transfer(thirtyPercentShare);
-        payable(charityAddress).transfer(thirtyPercentShare);
-        payable(forthAddress).transfer(shareOfForthAddress);
+        payable(u369gift_30).transfer(thirtyPercentShare);
+        payable(u369_30).transfer(thirtyPercentShare);
+        payable(u369impact_30).transfer(thirtyPercentShare);
+        payable(u369community_dev_30).transfer(shareOfForthAddress);
 
         uint256 currentTimePeriodCount = ((block.timestamp - deployTime) /
             timeLimitForReward) + 1;
@@ -1835,14 +1868,17 @@ contract uTokenFactory is Ownable {
             .mul(percentOfForthAddress)
             .div(ZOOM);
         // uint256 shareOfWinnerAddress = thirtyPercentShare;
-        // uint256 shareOfCharityAddress = thirtyPercentShare; // because winner and charity will receive same percentage.
+        // uint256 shareOfu369impact_30 = thirtyPercentShare; // because winner and charity will receive same percentage.
         // uint256 shareOfFundAddress = thirtyPercentShare; // because winner and charity will receive same percentage.
         // uint256 shareOfForthAddress = _depositFee - (thirtyPercentShare * 3); // it will receive remaining 10% percent
 
-        IERC20(_tokenAddress).transfer(rewardDistributer, thirtyPercentShare);
-        IERC20(_tokenAddress).transfer(fundAddress, thirtyPercentShare);
-        IERC20(_tokenAddress).transfer(charityAddress, thirtyPercentShare);
-        IERC20(_tokenAddress).transfer(forthAddress, shareOfForthAddress);
+        IERC20(_tokenAddress).transfer(u369gift_30, thirtyPercentShare);
+        IERC20(_tokenAddress).transfer(u369_30, thirtyPercentShare);
+        IERC20(_tokenAddress).transfer(u369impact_30, thirtyPercentShare);
+        IERC20(_tokenAddress).transfer(
+            u369community_dev_30,
+            shareOfForthAddress
+        );
 
         uint256 currentTimePeriodCount = ((block.timestamp - deployTime) /
             timeLimitForReward) + 1;
@@ -1879,7 +1915,7 @@ contract uTokenFactory is Ownable {
      * require: Withdrawal amount must be greater than 0.
      * require: Caller's balance must be sufficient for the withdrawal.
      */
-    function withdraw(
+    function burnAndUnprotect(
         string memory _password,
         address _uTokenAddress,
         uint256 _amount
@@ -1900,7 +1936,7 @@ contract uTokenFactory is Ownable {
         require(balance >= _amount, "Factory: Not enought tokens");
 
         require(
-            IuToken(_uTokenAddress).withdraw(_amount),
+            IuToken(_uTokenAddress).burnAndUnprotect(withdrawer, _amount),
             "Factory: withdraw failed"
         );
 
@@ -1922,7 +1958,7 @@ contract uTokenFactory is Ownable {
                 .remove(_uTokenAddress);
         }
 
-        emit Withdraw(withdrawer, _uTokenAddress, _amount);
+        emit BurnAndUnprotect(withdrawer, _uTokenAddress, _amount);
     }
 
     /**
@@ -1983,7 +2019,7 @@ contract uTokenFactory is Ownable {
      *
      * require The password and recovery number for the caller should not have been set before.
      */
-    function setPasswordAndRecoveryNumber(
+    function setMasterKeyAndSignKey(
         string memory _password,
         string memory _recoveryNumber
     ) external {
@@ -2022,106 +2058,17 @@ contract uTokenFactory is Ownable {
         _passwordOf[caller] = keccak256(bytes(_password));
     }
 
-    // function to change fund address. Only owner is authroized
-    function changeFundAddress(address _fundAddress) external onlyOwner {
-        fundAddress = _fundAddress;
-    }
-
-    // function to change charity address. only owner is authroized.
-    function changeCharityAddress(address _charityAddress) external onlyOwner {
-        charityAddress = _charityAddress;
-    }
-
     // function to change time limit for reward. only onwer is authorized.
     function changeTimeLimitForReward(uint256 _time) external onlyOwner {
         timeLimitForReward = _time;
     }
 
-    // function to change time limit for reward collection. only owner is authorized.
-    // function changeTimeLimitForRewardCollection(
-    //     uint256 _time
-    // ) external onlyOwner {
-    //     timeLimitForRewardCollection = _time;
-    // }
-
-    // function to withdrawReward for winner
-    /**
-     * @dev Allows the winner of the reward to withdraw it within a specific time limit.
-     *
-     * This function allows the winner to withdraw the reward in the form of Ether and tokens.
-     * It iteratively checks the periods from current to the first one and withdraws the available
-     * rewards if the winner hasn't already collected them. It keeps track of rewards collected for each period.
-     * The function requires the caller to be the current winner and to withdraw within a specific time limit.
-     *
-     * @notice The function iterates over periods, thus the gas cost could increase with the number of periods.
-     *
-     * require: The caller of the function should be the current winner.
-     * require: The function should be called within a specific time limit after the end of the period.
-     *
-     * emit: RewardOfETH An event emitted when Ether reward is collected for a specific period.
-     * emit: RewardOfToken An event emitted when Token reward is collected for a specific period.
-     */
-    ////////////////////////////////////////////////////////////////
-    // Commented out for now because reward is transferred to the
-    // Fund Distributor account at the time of wrapping the tokens.
-    ////////////////////////////////////////////////////////////////
-    // function withdrawReward() external {
-    //     require(get_currentWinner() == msg.sender, "You are not winner"); // check caller is winner or not
-
-    //     // check whether user is coming within time limit
-    //     uint256 endPointOfLimit = get_TimeLimitForWinnerForCurrentPeriod();
-    //     uint256 startPointOfLimit = endPointOfLimit.sub(
-    //         timeLimitForRewardCollection
-    //     );
-    //     require(
-    //         block.timestamp > startPointOfLimit &&
-    //             block.timestamp <= endPointOfLimit,
-    //         "Time limit exceeded"
-    //     );
-
-    //     uint256 period = get_PreviousPeriod();
-    //     while (!(isRewardCollectedOfPeriod[period])) {
-    //         if (!isDepositedInPeriod[period]) {
-    //             if (period == 1) break;
-    //             period--;
-    //             continue;
-    //         }
-
-    //         uint256 _ethInPeriod = get_ETHInPeriod(period);
-    //         // uint256 _tokensCountInPeriod = get_TokensDepositedInPeriodCount(period);
-    //         if (_ethInPeriod > 0) {
-    //             payable(rewardDistributer).transfer(_ethInPeriod);
-    //         }
-
-    //         address[] memory _tokens = get_TokensDepositedInPeriod(period);
-    //         uint256 _tokensCount = _tokens.length;
-    //         if (_tokensCount > 0) {
-    //             for (uint i; i < _tokensCount; i++) {
-    //                 address _token = _tokens[i];
-    //                 uint rewardAmountOfTokenInPeriod = get_rewardAmountOfTokenInPeriod(
-    //                         period,
-    //                         _token
-    //                     );
-    //                 IERC20(_token).transfer(
-    //                     rewardDistributer,
-    //                     rewardAmountOfTokenInPeriod
-    //                 );
-    //                 RewardOfToken(
-    //                     rewardDistributer,
-    //                     period,
-    //                     _token,
-    //                     rewardAmountOfTokenInPeriod
-    //                 );
-    //             }
-    //         }
-
-    //         isRewardCollectedOfPeriod[period] = true;
-    //         emit RewardOfETH(rewardDistributer, period, _ethInPeriod);
-
-    //         if (period == 1) break;
-    //         period--;
-    //     }
-    // }
+    // function to change the time limit for reward of 369 days
+    function changeTimeLimitForReward_369days(
+        uint256 _time
+    ) external onlyOwner {
+        timeLimitForReward_369days = _time;
+    }
 
     //--------------------Read Functions -------------------------------//
     //--------------------Allowed Tokens -------------------------------//
@@ -2201,6 +2148,63 @@ contract uTokenFactory is Ownable {
         address _token
     ) public view returns (address) {
         return uTokenAddressOf_token[_token];
+    }
+
+    //-------------------- Investment Details for 369 days -------------------------------//
+    function getAllDepositors_inSystem()
+        public
+        view
+        returns (address[] memory _allDepositors)
+    {
+        _allDepositors = allDepositors.values();
+    }
+
+    function getNativeCurrencyDepositedBy(
+        address _depositor
+    ) public view returns (uint256 _depositedNativeCurrency) {
+        _depositedNativeCurrency = nativeCurrencyDepositedBy[_depositor];
+    }
+
+    struct InvestmentOfUser {
+        address tokenAddress;
+        uint256 amount;
+    }
+
+    function getInvestmentDetails_OfUser(
+        address _depositor
+    ) public view returns (InvestmentOfUser[] memory investmentDetails) {
+        address[] memory totalTokens = depositedTokensOf[_depositor].values();
+        uint256 tokensCount = totalTokens.length;
+
+        investmentDetails = new InvestmentOfUser[](tokensCount);
+        if (tokensCount > 0) {
+            for (uint i; i < tokensCount; i++) {
+                investmentDetails[i] = InvestmentOfUser({
+                    tokenAddress: totalTokens[i],
+                    amount: depositedAmountOfUserForToken[_depositor][
+                        totalTokens[i]
+                    ]
+                });
+            }
+        }
+    }
+
+    function get_currentWinner_for369Days() public view returns (address) {
+        uint256 previousTimePeriod = ((block.timestamp - deployTime) /
+            timeLimitForReward_369days);
+
+        if (previousTimePeriod == 0) return address(0);
+
+        address[] memory depositors = getAllDepositors_inSystem();
+        uint256 depositorsLength = depositors.length;
+
+        if (depositorsLength == 0) return address(0);
+
+        uint randomNumber = uint(
+            keccak256(abi.encodePacked(previousTimePeriod, deployTime))
+        ) % depositorsLength;
+
+        return depositors[randomNumber];
     }
 
     /**
@@ -2405,10 +2409,19 @@ contract uTokenFactory is Ownable {
         return ((block.timestamp - deployTime) / timeLimitForReward) + 1;
     }
 
+    function get_CurrentPeriod_for369days() public view returns (uint) {
+        return
+            ((block.timestamp - deployTime) / timeLimitForReward_369days) + 1;
+    }
+
     // Calculates and returns the previous period based on the timestamp of the block, the deploy time of the contract, and the time limit for a reward.
     // The function returns an integer representing the previous period.
     function get_PreviousPeriod() public view returns (uint) {
         return ((block.timestamp - deployTime) / timeLimitForReward);
+    }
+
+    function get_PreviousPeriod_for369days() public view returns (uint) {
+        return ((block.timestamp - deployTime) / timeLimitForReward_369days);
     }
 
     // Calculates and returns the start and end times for the current period.
@@ -2436,17 +2449,23 @@ contract uTokenFactory is Ownable {
         }
     }
 
-    // Retrieves the time limit for the winner to collect their reward for the current period.
-    // The function returns a timestamp that represents the deadline for collecting the reward.
-    // It is calculated by adding the time limit for reward collection to the start time of the current period.
-    // function get_TimeLimitForWinnerForCurrentPeriod()
-    //     public
-    //     view
-    //     returns (uint256 rewardTimeLimit)
-    // {
-    //     (uint startTime, ) = get_CurrentPeriod_StartAndEndTime();
-    //     rewardTimeLimit = startTime + timeLimitForRewardCollection;
-    // }
+    function get_CurrentPeriod_StartAndEndTime_for369days()
+        public
+        view
+        returns (uint startTime, uint endTime)
+    {
+        uint currentTimePeriod = get_CurrentPeriod_for369days();
+
+        if (currentTimePeriod == 1) {
+            startTime = deployTime;
+            endTime = deployTime + timeLimitForReward_369days;
+        } else {
+            startTime =
+                deployTime +
+                (timeLimitForReward_369days * (currentTimePeriod - 1));
+            endTime = timeLimitForReward_369days + startTime;
+        }
+    }
 
     // Determines and returns the current winner.
     // The function calculates the previous time period based on the block timestamp, contract deployment time, and the reward time limit.
@@ -2556,6 +2575,7 @@ contract uTokenFactory is Ownable {
                 pendingPeriods[_count++] = _pendingPeriods[i];
             }
         }
+        // checking
     }
 
     /**
