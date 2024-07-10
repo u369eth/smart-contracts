@@ -86,7 +86,17 @@ End-users can claim their native token at any time.
 
 ### Reward System
 
-**_Description:_** There are 2 types of reward systems.
+**_Description:_** There are 2 types of reward systems. The Gift Pool and the Stateless Pool. In each pool a "Recipient" candidate is randomly selected.
+
+To implement this and randomly select the "Recipient" candidate the u369 system uses the following formula:
+
+`uint randomNumber = uint(keccak256 (abi.encodePacked (previousTimePeriod, deployTime))) % depositorsLength;`
+
+In simple words, the procedure is defined in the following steps:
+
+1. A keccak hash (hashing algorithm) is applied on the previous time period and contract deploy time.
+2. Hash is converted to integer value.
+3. A modulus operation performs on the converted integer and number of addresses in the last time period.
 
 **(A) Gift Pool**
 
